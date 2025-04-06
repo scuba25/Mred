@@ -1,58 +1,48 @@
-# Install dependencies manually in requirements.txt
-# fastapi
-# uvicorn
-# transformers
-# torch
-# nest-asyncio
+# main.py
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
-import nest_asyncio
+import uvicorn
 import os
 
-# Apply nested asyncio for environments like Colab (safe to keep)
-nest_asyncio.apply()
-
-# Optional: Simple API Key for protection (can remove or disable later)
-API_KEY = "2vMeQOOPc8Rki7ISlvbVZljJ9Bl_5MNXebAh8rugW4RzfRJQJ"  # <-- your actual key
-
-# Initialize FastAPI app
 app = FastAPI(
-    title="Mred GPT API",
-    description="Custom GPT-style API for unrestricted text moderation or other tasks.",
+    title="Mred GPT Project",
+    description="Lightweight moderation GPT API ready for Railway deployment",
     version="1.0.0"
 )
 
-# Model configuration
-MODEL_NAME = "distilbert-base-uncased"
-NUM_LABELS = 3  # Update if needed
-
-# Load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME,
-    num_labels=NUM_LABELS,
-    problem_type="multi_label_classification"
-)
-model.eval()
-
-# Define request schema
+# Request schema
 class ModerationRequest(BaseModel):
     text: str
 
-# Middleware for API Key checking (optional)
-@app.middleware("http")
-async def verify_api_key(request: Request, call_next):
-    if request.headers.get("x-api-key") != API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized. Invalid API Key.")
-    return await call_next(request)
+# Lazy-load model and tokenizer
+model = None
+tokenizer = None
 
-# Main moderation endpoint
+def load_model():
+    global model, tokenizer
+    if model is None or tokenizer is None:
+        print("Loading model...")
+        model_name = "distilbert-base-uncased"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=3,
+            problem_type="multi_label_classification"
+        )
+        model.eval()
+        print("Model loaded.")
+
+@app.on_event("startup")
+async def startup_event():
+    load_model()
+
 @app.post("/moderate")
 async def moderate(request: ModerationRequest):
-    # Tokenize input
+    load_model()  # Ensure model is loaded
+
     inputs = tokenizer(
         request.text,
         return_tensors="pt",
@@ -61,28 +51,18 @@ async def moderate(request: ModerationRequest):
         max_length=128
     )
 
-    # Run inference
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.sigmoid(outputs.logits).squeeze().tolist()
 
-    # Define labels
     labels = ["Toxic", "Violent", "Other"]
     response = {label: round(prob, 3) for label, prob in zip(labels, probs)}
 
-    # Logging (saved to local file)
-    log_entry = f"Input: {request.text}\nScores: {response}\n\n"
-    with open("moderation_log.txt", "a") as log_file:
-        log_file.write(log_entry)
-
     return {
         "text": request.text,
-        "moderation_scores": response,
-        "log": "Saved to moderation_log.txt"
+        "moderation_scores": response
     }
 
-# Get port from environment for Render
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
