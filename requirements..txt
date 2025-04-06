@@ -1,4 +1,6 @@
 fastapi
 uvicorn
+nest-asyncio
+pyngrok
 transformers
 torch
