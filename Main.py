@@ -1,30 +1,35 @@
+# Install dependencies manually in requirements.txt
+# fastapi
+# uvicorn
+# transformers
+# torch
+# nest-asyncio
+
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import nest_asyncio
-from pyngrok import ngrok, conf
-import uvicorn
-import threading
-import time
+import os
 
-# Allow nested loops for Colab / environments
+# Apply nested asyncio for environments like Colab (safe to keep)
 nest_asyncio.apply()
 
-# API Key (optional for user-facing if you want restriction, for now public test no restriction)
-API_KEY = None  # Leave None for public access
+# Optional: Simple API Key for protection (can remove or disable later)
+API_KEY = "2vMeQOOPc8Rki7ISlvbVZljJ9Bl_5MNXebAh8rugW4RzfRJQJ"  # <-- your actual key
 
-# FastAPI initialization
+# Initialize FastAPI app
 app = FastAPI(
     title="Mred GPT API",
-    description="FastAPI for Unfiltered ChatGPT simulation with Transformer model",
+    description="Custom GPT-style API for unrestricted text moderation or other tasks.",
     version="1.0.0"
 )
 
-# Model setup
+# Model configuration
 MODEL_NAME = "distilbert-base-uncased"
-NUM_LABELS = 3
+NUM_LABELS = 3  # Update if needed
 
+# Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_NAME,
@@ -33,22 +38,21 @@ model = AutoModelForSequenceClassification.from_pretrained(
 )
 model.eval()
 
-# Request body schema
+# Define request schema
 class ModerationRequest(BaseModel):
     text: str
 
-# Optional: API Key middleware
+# Middleware for API Key checking (optional)
 @app.middleware("http")
-async def api_key_check(request: Request, call_next):
-    if API_KEY:
-        if request.headers.get("x-api-key") != API_KEY:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-    response = await call_next(request)
-    return response
+async def verify_api_key(request: Request, call_next):
+    if request.headers.get("x-api-key") != API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized. Invalid API Key.")
+    return await call_next(request)
 
-# Main endpoint
+# Main moderation endpoint
 @app.post("/moderate")
 async def moderate(request: ModerationRequest):
+    # Tokenize input
     inputs = tokenizer(
         request.text,
         return_tensors="pt",
@@ -57,14 +61,16 @@ async def moderate(request: ModerationRequest):
         max_length=128
     )
 
+    # Run inference
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.sigmoid(outputs.logits).squeeze().tolist()
 
+    # Define labels
     labels = ["Toxic", "Violent", "Other"]
     response = {label: round(prob, 3) for label, prob in zip(labels, probs)}
 
-    # Log entry
+    # Logging (saved to local file)
     log_entry = f"Input: {request.text}\nScores: {response}\n\n"
     with open("moderation_log.txt", "a") as log_file:
         log_file.write(log_entry)
@@ -75,26 +81,8 @@ async def moderate(request: ModerationRequest):
         "log": "Saved to moderation_log.txt"
     }
 
-# Ngrok auto-start
-def start_ngrok():
-    conf.get_default().auth_token = "2vMeQOOPc8Rki7ISlvbVZljJ9Bl_5MNXebAh8rugW4RzfRJQJ"  # your token
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            public_url = ngrok.connect(8000)
-            print(f"Public API is live at: {public_url}")
-            break
-        except Exception as e:
-            print(f"Ngrok error: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-    else:
-        print("Ngrok tunnel failed after multiple attempts.")
-
-# Server starter
-def start_server():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# Run threads
-threading.Thread(target=start_server).start()
-threading.Thread(target=start_ngrok).start()
+# Get port from environment for Render
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=port)
